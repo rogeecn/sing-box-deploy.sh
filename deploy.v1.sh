@@ -101,22 +101,22 @@ issue_certificate() {
         error "Domain name cannot be empty."
     fi
     info "Domain set to: $DOMAIN"
-
+    
     local cert_dir="/etc/ssl/private/$DOMAIN"
     if [ -f "$cert_dir/fullchain.cer" ]; then
         warn "Certificate for $DOMAIN already exists. Skipping issuance."
         return
     fi
-
+    
     install_acme
-
+    
     # Register account to avoid errors with some CAs
     info "Registering acme.sh account..."
     "$HOME/.acme.sh/acme.sh" --register-account -m "admin@${DOMAIN}" --server letsencrypt &>/dev/null
-
+    
     info "Attempting to issue certificate for $DOMAIN using standalone mode (requires port 80)..."
     warn "Please ensure your domain points to this server's IP ($PUBLIC_IP) and port 80 is not blocked."
-
+    
     if "$HOME/.acme.sh/acme.sh" --issue --standalone -d "$DOMAIN" --keylength ec-256 --server letsencrypt; then
         mkdir -p "$cert_dir"
         if "$HOME/.acme.sh/acme.sh" --install-cert -d "$DOMAIN" \
@@ -134,10 +134,10 @@ issue_certificate() {
         warn "Hysteria2 requires a DIRECT connection (Grey Cloud / DNS Only)."
         warn "Generating a SELF-SIGNED certificate as a fallback so installation can finish..."
         warn "IMPORTANT: You likely need to disable Cloudflare Proxy for this to work, and clients must allow insecure connections."
-
+        
         mkdir -p "$cert_dir"
         openssl req -x509 -newkey rsa:2048 -keyout "$cert_dir/private.key" -out "$cert_dir/fullchain.cer" -days 3650 -nodes -subj "/CN=$DOMAIN" >/dev/null 2>&1
-
+        
         success "Self-signed certificate generated at $cert_dir."
         CERT_IS_SELF_SIGNED=true
     fi
@@ -150,20 +150,20 @@ install_singbox() {
         info "sing-box is already installed."
         return
     fi
-
+    
     local LATEST_URL
     LATEST_URL=$(curl -s "https://api.github.com/repos/SagerNet/sing-box/releases/latest" | jq -r '.assets[] | select(.name | test("linux-amd64.tar.gz$")) | .browser_download_url')
-
+    
     if [ -z "$LATEST_URL" ]; then
         error "Failed to get the latest sing-box release URL."
     fi
-
+    
     wget -qO sing-box.tar.gz "$LATEST_URL"
     tar -xzf sing-box.tar.gz
     mv sing-box-*/sing-box /usr/local/bin/
     chmod +x /usr/local/bin/sing-box
     rm -rf sing-box.tar.gz sing-box-*
-
+    
     success "sing-box installed successfully."
 }
 
@@ -173,18 +173,18 @@ install_hysteria() {
         info "Hysteria2 is already installed."
         return
     fi
-
+    
     local LATEST_URL
     LATEST_URL=$(curl -s "https://api.github.com/repos/apernet/hysteria/releases/latest" | jq -r '.assets[] | select(.name | test("linux-amd64$")) | .browser_download_url')
 
     if [ -z "$LATEST_URL" ]; then
         error "Failed to get the latest Hysteria2 release URL."
     fi
-
+    
     wget -qO hysteria "$LATEST_URL"
     mv hysteria /usr/local/bin/hysteria
     chmod +x /usr/local/bin/hysteria
-
+    
     success "Hysteria2 installed successfully."
 }
 
@@ -194,7 +194,7 @@ setup_systemd_service() {
     local service_name="$1"
     local config_path="$2"
     local exec_start="$3"
-
+    
     cat > "/etc/systemd/system/${service_name}.service" <<EOF
 [Unit]
 
@@ -215,14 +215,14 @@ LimitNOFILE=1000000
 
 WantedBy=multi-user.target
 EOF
-
+    
     systemctl daemon-reload
     systemctl enable "${service_name}"
     systemctl restart "${service_name}"
-
+    
     # Wait a moment for service to start
     sleep 2
-
+    
     if systemctl is-active --quiet "${service_name}"; then
         success "${service_name} is running."
     else
@@ -233,11 +233,7 @@ EOF
 configure_vless_reality() {
     install_singbox
     info "Configuring VLESS + XTLS Reality..."
-
-    read -rp "Please enter the SNI domain for Reality (default: www.apple.com): " REALITY_DOMAIN
-    REALITY_DOMAIN=${REALITY_DOMAIN:-www.apple.com}
-    info "Using SNI domain: $REALITY_DOMAIN"
-
+    
     local VLESS_UUID
     VLESS_UUID=$(sing-box generate uuid)
     local KEY_PAIR
@@ -248,7 +244,7 @@ configure_vless_reality() {
     PUBLIC_KEY=$(echo "$KEY_PAIR" | awk '/PublicKey/ {print $2}')
     local SHORT_ID
     SHORT_ID=$(openssl rand -hex 8)
-
+    
     mkdir -p /etc/sing-box
     cat > /etc/sing-box/config.json <<EOF
 {
@@ -270,11 +266,11 @@ configure_vless_reality() {
       ],
       "tls": {
         "enabled": true,
-        "server_name": "${REALITY_DOMAIN}",
+        "server_name": "www.apple.com",
         "reality": {
           "enabled": true,
           "handshake": {
-            "server": "${REALITY_DOMAIN}",
+            "server": "www.apple.com",
             "server_port": 443
           },
           "private_key": "${PRIVATE_KEY}",
@@ -285,18 +281,15 @@ configure_vless_reality() {
   ]
 }
 EOF
-
+    
     setup_systemd_service "sing-box" "/etc/sing-box/config.json" "/usr/local/bin/sing-box run -c /etc/sing-box/config.json"
-
+    
     # URL encode the public key for safety
     local SAFE_PUBLIC_KEY
     SAFE_PUBLIC_KEY=$(echo -n "$PUBLIC_KEY" | jq -sRr @uri)
 
-    read -rp "Enter a name for this configuration (default: VLESS-REALITY): " CONFIG_NAME
-    CONFIG_NAME=${CONFIG_NAME:-VLESS-REALITY}
-
-    local share_link="vless://${VLESS_UUID}@${PUBLIC_IP}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${REALITY_DOMAIN}&fp=chrome&pbk=${SAFE_PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp&headerType=none#${CONFIG_NAME}"
-
+    local share_link="vless://${VLESS_UUID}@${PUBLIC_IP}:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.apple.com&fp=chrome&pbk=${SAFE_PUBLIC_KEY}&sid=${SHORT_ID}&type=tcp&headerType=none#VLESS-REALITY"
+    
     success "VLESS + XTLS Reality installation complete!"
     echo -e "\n${C_CYAN}--- Configuration Details ---${C_RESET}"
     echo -e "  ${C_YELLOW}Address:${C_RESET}      ${PUBLIC_IP}"
@@ -304,7 +297,7 @@ EOF
     echo -e "  ${C_YELLOW}UUID:${C_RESET}         ${VLESS_UUID}"
     echo -e "  ${C_YELLOW}Flow:${C_RESET}         xtls-rprx-vision"
     echo -e "  ${C_YELLOW}Security:${C_RESET}     reality"
-    echo -e "  ${C_YELLOW}SNI:${C_RESET}          ${REALITY_DOMAIN}"
+    echo -e "  ${C_YELLOW}SNI:${C_RESET}          www.apple.com"
     echo -e "  ${C_YELLOW}Public Key:${C_RESET}   ${PUBLIC_KEY}"
     echo -e "  ${C_YELLOW}Short ID:${C_RESET}     ${SHORT_ID}"
     echo -e "\n${C_CYAN}--- Share Link ---${C_RESET}"
@@ -313,7 +306,7 @@ EOF
 
 configure_vless_ws() {
     info "Configuring VLESS + WebSocket + TLS..."
-
+    
     read -rp "Please enter your domain name: " DOMAIN
     if [ -z "$DOMAIN" ]; then
         error "Domain name cannot be empty."
@@ -321,20 +314,20 @@ configure_vless_ws() {
     info "Domain set to: $DOMAIN"
 
     install_singbox
-
+    
     local VLESS_UUID
     VLESS_UUID=$(sing-box generate uuid)
     local WS_PATH
     WS_PATH="/$(openssl rand -hex 8)"
-
+    
     # Generate Self-Signed Certificate for Cloudflare
     mkdir -p /etc/sing-box
     local CERT_FILE="/etc/sing-box/self_signed.crt"
     local KEY_FILE="/etc/sing-box/self_signed.key"
-
+    
     info "Generating self-signed certificate for $DOMAIN..."
     openssl req -x509 -newkey rsa:2048 -keyout "$KEY_FILE" -out "$CERT_FILE" -days 3650 -nodes -subj "/CN=$DOMAIN" >/dev/null 2>&1
-
+    
     cat > /etc/sing-box/config.json <<EOF
 {
   "log": {
@@ -368,11 +361,8 @@ configure_vless_ws() {
 EOF
 
     setup_systemd_service "sing-box" "/etc/sing-box/config.json" "/usr/local/bin/sing-box run -c /etc/sing-box/config.json"
-
-    read -rp "Enter a name for this configuration (default: VLESS-WS): " CONFIG_NAME
-    CONFIG_NAME=${CONFIG_NAME:-VLESS-WS}
-
-    local share_link="vless://${VLESS_UUID}@${DOMAIN}:443?encryption=none&security=tls&sni=${DOMAIN}&type=ws&host=${DOMAIN}&path=${WS_PATH}#${CONFIG_NAME}"
+    
+    local share_link="vless://${VLESS_UUID}@${DOMAIN}:443?encryption=none&security=tls&sni=${DOMAIN}&type=ws&host=${DOMAIN}&path=${WS_PATH}#VLESS-WS"
 
     success "VLESS + WS + TLS installation complete!"
     warn "Remember to point your domain ($DOMAIN) to $PUBLIC_IP in Cloudflare and enable the orange cloud (proxy)!"
@@ -397,7 +387,7 @@ configure_hysteria2() {
 
     info "Configuring Hysteria2..."
 
-
+    
 
     local HY_PASSWORD
 
@@ -409,7 +399,7 @@ configure_hysteria2() {
 
     HY_PORT=$(shuf -i 10000-60000 -n 1)
 
-
+    
 
     mkdir -p /etc/hysteria
 
@@ -447,16 +437,15 @@ masquerade:
 
 EOF
 
-
+    
 
     setup_systemd_service "hysteria" "/etc/hysteria/config.yaml" "/usr/local/bin/hysteria server -c /etc/hysteria/config.yaml"
 
-    read -rp "Enter a name for this configuration (default: Hysteria2): " CONFIG_NAME
-    CONFIG_NAME=${CONFIG_NAME:-Hysteria2}
+    
 
-    local share_link="hysteria2://${HY_PASSWORD}@${DOMAIN}:${HY_PORT}?sni=${DOMAIN}#${CONFIG_NAME}"
+    local share_link="hysteria2://${HY_PASSWORD}@${DOMAIN}:${HY_PORT}?sni=${DOMAIN}#Hysteria2"
 
-
+    
 
     if [ "$CERT_IS_SELF_SIGNED" = true ]; then
 
@@ -464,7 +453,7 @@ EOF
 
     fi
 
-
+    
 
     success "Hysteria2 installation complete!"
 
@@ -520,93 +509,6 @@ uninstall() {
     success "All proxy services and configurations have been uninstalled."
 }
 
-# --- Get Share Link ---
-get_share_link() {
-    info "Retrieving share link..."
-
-    if [ -f "/etc/sing-box/config.json" ]; then
-        if grep -q "reality" "/etc/sing-box/config.json"; then
-            # VLESS Reality
-            local VLESS_UUID
-            VLESS_UUID=$(jq -r '.inbounds[0].users[0].uuid' /etc/sing-box/config.json)
-            local REALITY_DOMAIN
-            REALITY_DOMAIN=$(jq -r '.inbounds[0].tls.server_name' /etc/sing-box/config.json)
-            local PUBLIC_KEY
-            # Use openssl to extract public key from private key if possible, but we don't store public key in config.
-            # We can't easily recover the public key from the private key string in the config without re-deriving it,
-            # which sing-box might not directly expose a tool for in this context easily.
-            # However, the user might have lost it.
-            # Ideally we should have saved it. For now, we will try to extract the private key.
-            local PRIVATE_KEY
-            PRIVATE_KEY=$(jq -r '.inbounds[0].tls.reality.private_key' /etc/sing-box/config.json)
-            local SHORT_ID
-            SHORT_ID=$(jq -r '.inbounds[0].tls.reality.short_id[0]' /etc/sing-box/config.json)
-
-            # Re-deriving public key from private key is not trivial with standard tools without sing-box specific commands or external libs if it's strictly X25519.
-            # sing-box doesn't seem to have a simple 'get-public-key' command from private key string in CLI v1.8+.
-            # WE WILL WARN THE USER if we can't find it.
-            # BUT, we can try to find the public key if we saved it? No we didn't save it to a file.
-
-            # Workaround: Use regex to find the key if we can, or just warn.
-            # Actually, `sing-box generate reality-keypair` outputs both. We only saved private to config.
-
-            warn "Cannot fully reconstruct Reality link because the Public Key is not stored in the config."
-            warn "Please reinstall or check your saved notes."
-            # We could try to regenerate it if we had the keypair generation logic, but that changes keys.
-            return
-
-        elif grep -q "ws" "/etc/sing-box/config.json"; then
-            # VLESS WS
-            local VLESS_UUID
-            VLESS_UUID=$(jq -r '.inbounds[0].users[0].uuid' /etc/sing-box/config.json)
-            local DOMAIN
-            DOMAIN=$(jq -r '.inbounds[0].tls.server_name' /etc/sing-box/config.json)
-            local WS_PATH
-            WS_PATH=$(jq -r '.inbounds[0].transport.path' /etc/sing-box/config.json)
-
-            local share_link="vless://${VLESS_UUID}@${DOMAIN}:443?encryption=none&security=tls&sni=${DOMAIN}&type=ws&host=${DOMAIN}&path=${WS_PATH}#VLESS-WS"
-
-            echo -e "\n${C_CYAN}--- Share Link (VLESS WS) ---${C_RESET}"
-            echo -e "${C_GREEN}${share_link}${C_RESET}\n"
-        fi
-
-    elif [ -f "/etc/hysteria/config.yaml" ]; then
-        # Hysteria2
-        local HY_PORT
-        HY_PORT=$(grep "listen:" /etc/hysteria/config.yaml | awk '{print $2}' | cut -c 2-)
-        local HY_PASSWORD
-        HY_PASSWORD=$(grep "password:" /etc/hysteria/config.yaml | awk '{print $2}')
-        local CERT_PATH
-        CERT_PATH=$(grep "cert:" /etc/hysteria/config.yaml | awk '{print $2}')
-
-        # Extract domain from cert path if possible
-        local DOMAIN=""
-        if [[ "$CERT_PATH" == *"/etc/ssl/private/"* ]]; then
-             DOMAIN=$(echo "$CERT_PATH" | sed 's|/etc/ssl/private/||;s|/fullchain.cer||')
-        fi
-
-        if [ -z "$DOMAIN" ]; then
-            error "Could not determine domain from config."
-        fi
-
-        local share_link="hysteria2://${HY_PASSWORD}@${DOMAIN}:${HY_PORT}?sni=${DOMAIN}#Hysteria2"
-
-        # Check if self-signed (insecure)
-        # We can check if the cert was generated by us as self-signed or if it's valid
-        # Simple check: if we deployed it, we might know.
-        # But for retrieval, we can check if the issuer is likely self-signed or just append insecure=1 if unsure?
-        # Better: check if CA is not standard.
-        if openssl x509 -in "$CERT_PATH" -noout -issuer | grep -q "CN = $DOMAIN"; then
-             share_link="${share_link}&insecure=1"
-        fi
-
-        echo -e "\n${C_CYAN}--- Share Link (Hysteria2) ---${C_RESET}"
-        echo -e "${C_GREEN}${share_link}${C_RESET}\n"
-    else
-        error "No supported configuration found."
-    fi
-}
-
 # --- Main Menu ---
 main_menu() {
     clear
@@ -620,35 +522,31 @@ main_menu() {
     echo -e "  ${C_GREEN}2.${C_RESET} Install ${C_YELLOW}VLESS + WebSocket + TLS${C_RESET} (For Cloudflare CDN)"
     echo -e "  ${C_GREEN}3.${C_RESET} Install ${C_YELLOW}Hysteria2${C_RESET} (For unstable networks)"
     echo -e "  ----------------------------------------------------"
-    echo -e "  ${C_GREEN}5.${C_RESET} ${C_YELLOW}Get Share Link${C_RESET}"
     echo -e "  ${C_RED}4.${C_RESET} ${C_YELLOW}Uninstall All Services${C_RESET}"
     echo -e "  ${C_RED}0.${C_RESET} ${C_YELLOW}Exit${C_RESET}"
     echo ""
-    read -rp "Enter your choice [0-5]: " choice
+    read -rp "Enter your choice [0-4]: " choice
 
     case $choice in
         1)
             configure_vless_reality
-            ;;
+            ;; 
         2)
             configure_vless_ws
-            ;;
+            ;; 
         3)
             configure_hysteria2
-            ;;
+            ;; 
         4)
             uninstall
-            ;;
-        5)
-            get_share_link
-            ;;
+            ;; 
         0)
             info "Exiting script. Goodbye!"
             exit 0
-            ;;
+            ;; 
         *)
             error "Invalid option. Please try again."
-            ;;
+            ;; 
     esac
 }
 
